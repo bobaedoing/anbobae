@@ -287,6 +287,7 @@
     .btn.ghost:hover { background: #f1ece0; }
     .btn.danger { border-color: var(--stamp); color: var(--stamp); }
     .btn.danger:hover { background: var(--stamp-soft); }
+    .btn:disabled { opacity: .55; cursor: not-allowed; }
     .editing-flag {
       display: none;
       align-items: center;
@@ -593,6 +594,7 @@
           <div class="photo-drop">
             <input type="file" id="f-photos" accept="image/jpeg,image/png,image/jpg" multiple hidden>
             <label for="f-photos" class="photo-pick-btn">📷 사진 선택하기</label>
+            <button type="button" class="btn ghost" id="ai-analyze-btn">✨ AI로 분석하기</button>
             <span class="photo-drop-hint">선택한 사진은 미리보기로만 보이고, 아래 "저장하기"를 눌러야 실제로 저장돼요</span>
           </div>
           <div class="photo-thumbs" id="photo-thumbs"></div>
@@ -698,6 +700,13 @@
        - 초보자가 읽기 쉽도록 함수를 역할별로 나눠 놓았습니다.
        ========================================================= */
 
+    // ---------- AI 분석 (Supabase Edge Function) 설정 ----------
+    // 아래 두 값은 "비밀값"이 아니라, 브라우저에서 직접 호출하도록 설계된
+    // Supabase의 공개용 값입니다(anon/public key).
+    // ⚠️ "service_role" 키(관리자 권한급 비밀키)는 절대 여기에 넣지 마세요.
+    const SUPABASE_FUNCTION_URL = "https://mdquhqilmfmjznxitvmj.supabase.co/functions/v1/analyze-article";
+    const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1kcXVocWlsbWZtanpueGl0dm1qIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc1ODc4OTAsImV4cCI6MjEwMzE2Mzg5MH0.HXbD2krK5Wsjyq9m6iMlA188Ni9og4IvIVQQC2nbFP4";
+
     const STORAGE_KEY = "news-archive-articles-v1";
 
     const CATEGORIES = ["부동산", "사업", "경제", "투자", "정책", "사회", "기타"];
@@ -791,6 +800,7 @@
 
     const photoInput = document.querySelector("#f-photos");
     const photoThumbsEl = document.querySelector("#photo-thumbs");
+    const aiAnalyzeBtn = document.querySelector("#ai-analyze-btn");
     const modalGalleryEl = document.querySelector("#modal-gallery");
 
     // ---------- localStorage 읽기/쓰기 ----------
@@ -916,6 +926,94 @@
 
     // form.reset()이 호출될 때(수정 취소, 저장 완료, "비우기" 버튼) 사진 목록도 함께 비운다.
     form.addEventListener("reset", clearFormPhotos);
+
+    // ---------- AI 사진 분석 ----------
+    // 사진(File 또는 기존에 저장된 blob) 하나를 "data:image/...;base64,..." 문자열로 바꾼다.
+    function blobToDataURL(blob) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(blob);
+      });
+    }
+
+    async function photoToDataURL(photo) {
+      if (photo.file) {
+        // 방금 새로 선택한 사진
+        return blobToDataURL(photo.file);
+      }
+      // 수정 화면에서 불러온, 이미 저장돼 있던 사진 (미리보기 blob URL을 다시 읽어온다)
+      const blob = await fetch(photo.previewUrl).then(res => res.blob());
+      return blobToDataURL(blob);
+    }
+
+    // AI 분석 결과 중 "값이 있는 필드만" 폼에 채운다. 사용자가 이미 입력해둔
+    // 내용을 빈 문자열로 덮어써서 지우는 일이 없도록 하기 위해서다.
+    function applyAiResultToForm(result) {
+      if (!result || typeof result !== "object") return;
+
+      if (result.title) form.title.value = result.title;
+      if (result.date) form.date.value = result.date;
+      if (result.press) form.press.value = result.press;
+      if (result.category && CATEGORIES.includes(result.category)) {
+        form.category.value = result.category;
+      }
+      if (result.region) form.region.value = result.region;
+      if (Array.isArray(result.keywords) && result.keywords.length > 0) {
+        form.keywords.value = result.keywords.join(", ");
+      }
+      if (result.bon) form.bon.value = result.bon;
+      if (result.kkae) form.kkae.value = result.kkae;
+      if (result.jeok) form.jeok.value = result.jeok;
+    }
+
+    let aiAnalyzing = false; // 중복 클릭으로 두 번 호출되는 것을 막는 플래그
+
+    aiAnalyzeBtn.addEventListener("click", async () => {
+      if (aiAnalyzing) return;
+
+      if (formPhotos.length === 0) {
+        showToast("먼저 기사 사진을 선택해주세요.");
+        return;
+      }
+
+      aiAnalyzing = true;
+      aiAnalyzeBtn.disabled = true;
+      const originalLabel = aiAnalyzeBtn.textContent;
+      aiAnalyzeBtn.textContent = "⏳ AI 분석 중...";
+
+      try {
+        const images = await Promise.all(formPhotos.map(photoToDataURL));
+
+        const res = await fetch(SUPABASE_FUNCTION_URL, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
+          },
+          body: JSON.stringify({ images }),
+        });
+
+        const data = await res.json().catch(() => null);
+
+        if (!res.ok || !data || data.ok !== true) {
+          const message = (data && data.error) ? data.error : "AI 분석 요청이 실패했습니다.";
+          showToast(message);
+          return; // 입력값/선택한 사진은 그대로 유지 (아무것도 건드리지 않음)
+        }
+
+        applyAiResultToForm(data.result);
+        showToast("AI 분석이 완료되었습니다. 내용을 확인하고 수정한 뒤 저장해주세요.");
+      } catch (err) {
+        console.error("AI 분석 중 오류:", err);
+        showToast("AI 분석 중 오류가 발생했어요. 인터넷 연결을 확인하고 다시 시도해주세요.");
+      } finally {
+        aiAnalyzing = false;
+        aiAnalyzeBtn.disabled = false;
+        aiAnalyzeBtn.textContent = originalLabel;
+      }
+    });
 
     // ---------- 화면 전환 ----------
     function setView(viewId) {
