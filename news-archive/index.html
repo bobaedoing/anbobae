@@ -597,6 +597,7 @@
             <button type="button" class="btn ghost" id="ai-analyze-btn">✨ AI로 분석하기</button>
             <span class="photo-drop-hint">선택한 사진은 미리보기로만 보이고, 아래 "저장하기"를 눌러야 실제로 저장돼요</span>
           </div>
+          <div class="photo-drop-hint" id="ai-offline-hint" hidden></div>
           <div class="photo-thumbs" id="photo-thumbs"></div>
         </div>
 
@@ -801,6 +802,7 @@
     const photoInput = document.querySelector("#f-photos");
     const photoThumbsEl = document.querySelector("#photo-thumbs");
     const aiAnalyzeBtn = document.querySelector("#ai-analyze-btn");
+    const aiOfflineHintEl = document.querySelector("#ai-offline-hint");
     const modalGalleryEl = document.querySelector("#modal-gallery");
 
     // ---------- localStorage 읽기/쓰기 ----------
@@ -973,6 +975,11 @@
     aiAnalyzeBtn.addEventListener("click", async () => {
       if (aiAnalyzing) return;
 
+      if (!navigator.onLine) {
+        showToast("오프라인 상태입니다. 인터넷 연결 후 다시 시도해주세요.");
+        return;
+      }
+
       if (formPhotos.length === 0) {
         showToast("먼저 기사 사진을 선택해주세요.");
         return;
@@ -1010,10 +1017,28 @@
         showToast("AI 분석 중 오류가 발생했어요. 인터넷 연결을 확인하고 다시 시도해주세요.");
       } finally {
         aiAnalyzing = false;
-        aiAnalyzeBtn.disabled = false;
+        aiAnalyzeBtn.disabled = !navigator.onLine; // 분석이 끝나는 사이 오프라인이 됐을 수도 있으니 다시 확인
         aiAnalyzeBtn.textContent = originalLabel;
       }
     });
+
+    // 온라인/오프라인 상태에 따라 AI 분석 버튼을 켜고 끈다.
+    // 지금 분석이 진행 중일 때는 건드리지 않는다 (분석 자체의 disabled 처리는 위 클릭 핸들러가 담당).
+    function updateOnlineStatus() {
+      const online = navigator.onLine;
+      aiOfflineHintEl.hidden = online;
+      if (!online) {
+        aiOfflineHintEl.textContent =
+          "오프라인에서는 AI 분석을 사용할 수 없습니다. 사진과 내용은 저장해둘 수 있으며 인터넷 연결 후 분석할 수 있습니다.";
+      }
+      if (!aiAnalyzing) {
+        aiAnalyzeBtn.disabled = !online;
+      }
+    }
+
+    window.addEventListener("online", updateOnlineStatus);
+    window.addEventListener("offline", updateOnlineStatus);
+    updateOnlineStatus(); // 페이지를 열 때(또는 이미 오프라인 상태로 열렸을 때) 초기 상태 반영
 
     // ---------- 화면 전환 ----------
     function setView(viewId) {
