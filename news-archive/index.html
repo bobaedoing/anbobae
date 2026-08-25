@@ -543,6 +543,7 @@
       .editing-flag { margin-right: 0; }
     }
   </style>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
 
@@ -555,16 +556,66 @@
           <div class="brand-sub">기사를 본·깨·적으로 정리해 쌓아두는 리서치 보관함</div>
         </div>
       </div>
-      <nav class="nav-actions" aria-label="화면 전환">
+      <nav class="nav-actions" aria-label="화면 전환" id="app-nav" hidden>
         <button class="nav-btn active" type="button" data-view="list">보관함</button>
         <button class="nav-btn" type="button" data-view="register">기사 등록</button>
+        <button class="nav-btn" type="button" id="logout-btn">로그아웃</button>
       </nav>
     </div>
   </header>
 
   <main>
+    <!-- ================= 로그인/회원가입 화면 ================= -->
+    <section class="view active" id="view-auth">
+      <div class="shell">
+        <div class="page-head">
+          <p class="page-eyebrow">Welcome</p>
+          <h1 id="auth-heading">로그인</h1>
+          <p>로그인하면 신문 스크랩을 등록하고 AI 분석을 사용할 수 있어요.</p>
+        </div>
+
+        <form class="form-card" id="login-form">
+          <div class="form-grid">
+            <div class="field full">
+              <label for="login-email">이메일</label>
+              <input id="login-email" name="email" type="email" required>
+            </div>
+            <div class="field full">
+              <label for="login-password">비밀번호</label>
+              <input id="login-password" name="password" type="password" required>
+            </div>
+          </div>
+          <div class="form-actions">
+            <button type="button" class="btn ghost" id="show-signup-btn">회원가입으로 전환</button>
+            <button type="submit" class="btn primary" id="login-submit-btn">로그인</button>
+          </div>
+        </form>
+
+        <form class="form-card" id="signup-form" hidden>
+          <div class="form-grid">
+            <div class="field full">
+              <label for="signup-email">이메일</label>
+              <input id="signup-email" name="email" type="email" required>
+            </div>
+            <div class="field full">
+              <label for="signup-password">비밀번호</label>
+              <input id="signup-password" name="password" type="password" required minlength="6">
+            </div>
+            <div class="field full">
+              <label for="signup-password-confirm">비밀번호 확인</label>
+              <input id="signup-password-confirm" name="passwordConfirm" type="password" required minlength="6">
+            </div>
+          </div>
+          <div class="form-actions">
+            <button type="button" class="btn ghost" id="show-login-btn">로그인으로 전환</button>
+            <button type="submit" class="btn primary" id="signup-submit-btn">회원가입</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
     <!-- ================= 보관함(목록) 화면 ================= -->
-    <section class="view active" id="view-list">
+    <section class="view" id="view-list">
       <div class="shell">
         <div class="page-head">
           <p class="page-eyebrow">Archive</p>
@@ -608,6 +659,7 @@
             <span class="photo-drop-hint">선택한 사진은 미리보기로만 보이고, 아래 "저장하기"를 눌러야 실제로 저장돼요</span>
           </div>
           <div class="photo-drop-hint" id="ai-offline-hint" hidden></div>
+          <div class="photo-drop-hint" id="ai-usage-hint" hidden></div>
           <div class="photo-thumbs" id="photo-thumbs"></div>
         </div>
 
@@ -711,12 +763,13 @@
        - 초보자가 읽기 쉽도록 함수를 역할별로 나눠 놓았습니다.
        ========================================================= */
 
-    // ---------- AI 분석 (Supabase Edge Function) 설정 ----------
-    // 아래 두 값은 "비밀값"이 아니라, 브라우저에서 직접 호출하도록 설계된
-    // Supabase의 공개용 값입니다(anon/public key).
-    // ⚠️ "service_role" 키(관리자 권한급 비밀키)는 절대 여기에 넣지 마세요.
-    const SUPABASE_FUNCTION_URL = "https://mdquhqilmfmjznxitvmj.supabase.co/functions/v1/analyze-article";
-    const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1kcXVocWlsbWZtanpueGl0dm1qIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc1ODc4OTAsImV4cCI6MjEwMzE2Mzg5MH0.HXbD2krK5Wsjyq9m6iMlA188Ni9og4IvIVQQC2nbFP4";
+    // ---------- Supabase 설정 (로그인 + AI 분석 Edge Function) ----------
+    // 아래 두 값은 "비밀값"이 아니라, 브라우저에서 직접 쓰도록 설계된
+    // Supabase의 공개용 값입니다 (Publishable Key).
+    // ⚠️ service_role / secret / OPENAI_API_KEY는 절대 여기에 넣지 마세요.
+    const SUPABASE_URL = "https://mdquhqilmfmjznxitvmj.supabase.co";
+    const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_DpWsjeTt-xxqje2_7ykJ8Q_YDZbbdux";
+    const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 
     const STORAGE_KEY = "news-archive-articles-v1";
 
@@ -814,7 +867,17 @@
     const photoThumbsEl = document.querySelector("#photo-thumbs");
     const aiAnalyzeBtn = document.querySelector("#ai-analyze-btn");
     const aiOfflineHintEl = document.querySelector("#ai-offline-hint");
+    const aiUsageHintEl = document.querySelector("#ai-usage-hint");
     const modalGalleryEl = document.querySelector("#modal-gallery");
+
+    // ---------- 엘리먼트 참조: 로그인/회원가입 ----------
+    const appNav = document.querySelector("#app-nav");
+    const logoutBtn = document.querySelector("#logout-btn");
+    const authHeading = document.querySelector("#auth-heading");
+    const loginForm = document.querySelector("#login-form");
+    const signupForm = document.querySelector("#signup-form");
+    const showSignupBtn = document.querySelector("#show-signup-btn");
+    const showLoginBtn = document.querySelector("#show-login-btn");
 
     // ---------- localStorage 읽기/쓰기 ----------
     function loadArticles() {
@@ -991,6 +1054,23 @@
       if (result.jeok) form.jeok.value = result.jeok;
     }
 
+    // AI 분석 응답의 usage 정보를 사진 카드 아래에 안내 문구로 보여준다.
+    function updateUsageHint(usage) {
+      if (!usage) {
+        aiUsageHintEl.hidden = true;
+        return;
+      }
+      if (usage.unlimited) {
+        aiUsageHintEl.textContent = "AI 분석 무제한";
+      } else if (typeof usage.count === "number" && typeof usage.limit === "number") {
+        aiUsageHintEl.textContent = `이번 달 AI 분석 ${usage.count} / ${usage.limit}회`;
+      } else {
+        aiUsageHintEl.hidden = true;
+        return;
+      }
+      aiUsageHintEl.hidden = false;
+    }
+
     let aiAnalyzing = false; // 중복 클릭으로 두 번 호출되는 것을 막는 플래그
 
     aiAnalyzeBtn.addEventListener("click", async () => {
@@ -1014,24 +1094,33 @@
       try {
         const images = await Promise.all(formPhotos.map(photoToDataURL));
 
-        const res = await fetch(SUPABASE_FUNCTION_URL, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
-          },
-          body: JSON.stringify({ images }),
+        // supabase.functions.invoke()를 쓰면, 로그인 세션이 있을 때 SDK가
+        // 알아서 Authorization 헤더에 내 로그인 토큰을 실어서 보내준다.
+        const { data, error } = await supabaseClient.functions.invoke("analyze-article", {
+          body: { images },
         });
 
-        const data = await res.json().catch(() => null);
-
-        if (!res.ok || !data || data.ok !== true) {
-          const message = (data && data.error) ? data.error : "AI 분석 요청이 실패했습니다.";
+        if (error) {
+          let message = "AI 분석 요청이 실패했습니다.";
+          let usage = null;
+          try {
+            const errBody = await error.context.json();
+            if (errBody?.usage) usage = errBody.usage;
+            if (!usage?.unlimited && typeof usage?.count === "number" && usage.count >= usage.limit) {
+              message = "이번 달 무료 AI 분석 횟수를 모두 사용했습니다.";
+            } else if (errBody?.error) {
+              message = errBody.error;
+            }
+          } catch (parseErr) {
+            console.error("AI 오류 응답을 읽지 못했습니다:", parseErr);
+          }
           showToast(message);
+          updateUsageHint(usage);
           return; // 입력값/선택한 사진은 그대로 유지 (아무것도 건드리지 않음)
         }
 
         applyAiResultToForm(data.result);
+        updateUsageHint(data.usage);
         showToast("AI 분석이 완료되었습니다. 내용을 확인하고 수정한 뒤 저장해주세요.");
       } catch (err) {
         console.error("AI 분석 중 오류:", err);
@@ -1076,6 +1165,105 @@
         }
         setView(btn.dataset.view);
       });
+    });
+
+    // ---------- 로그인 / 회원가입 / 로그아웃 ----------
+    let currentSession = null;
+
+    function setAuthMode(mode) {
+      const isLogin = mode === "login";
+      loginForm.hidden = !isLogin;
+      signupForm.hidden = isLogin;
+      authHeading.textContent = isLogin ? "로그인" : "회원가입";
+    }
+
+    showSignupBtn.addEventListener("click", () => setAuthMode("signup"));
+    showLoginBtn.addEventListener("click", () => setAuthMode("login"));
+
+    function applyAuthState() {
+      const loggedIn = !!currentSession;
+      appNav.hidden = !loggedIn;
+
+      if (loggedIn) {
+        // 로그인 화면에 있었을 때만 보관함으로 이동한다.
+        // (토큰 자동 갱신 등 다른 이유로 이 함수가 다시 호출돼도,
+        //  이미 다른 화면을 보고 있던 사용자를 갑자기 이동시키지 않기 위해서다.)
+        const authView = document.querySelector("#view-auth");
+        if (authView.classList.contains("active")) {
+          setView("list");
+        }
+      } else {
+        views.forEach(v => v.classList.toggle("active", v.id === "view-auth"));
+        navButtons.forEach(b => b.classList.remove("active"));
+        setAuthMode("login");
+      }
+    }
+
+    async function initAuth() {
+      const { data } = await supabaseClient.auth.getSession();
+      currentSession = data.session;
+      applyAuthState();
+
+      supabaseClient.auth.onAuthStateChange((_event, session) => {
+        currentSession = session;
+        applyAuthState();
+      });
+    }
+
+    loginForm.addEventListener("submit", async e => {
+      e.preventDefault();
+      const email = loginForm.email.value.trim();
+      const password = loginForm.password.value;
+      const btn = document.querySelector("#login-submit-btn");
+      btn.disabled = true;
+      try {
+        const { error } = await supabaseClient.auth.signInWithPassword({ email, password });
+        if (error) {
+          const message = error.message === "Email not confirmed"
+            ? "이메일 인증을 먼저 완료해주세요. 가입 시 받으신 메일의 링크를 확인해주세요."
+            : "로그인에 실패했습니다. 이메일과 비밀번호를 확인해주세요.";
+          showToast(message);
+          return;
+        }
+        loginForm.reset();
+      } catch (err) {
+        console.error("로그인 중 오류:", err);
+        showToast("로그인 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.");
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    signupForm.addEventListener("submit", async e => {
+      e.preventDefault();
+      const email = signupForm.email.value.trim();
+      const password = signupForm.password.value;
+      const passwordConfirm = signupForm.passwordConfirm.value;
+      if (password !== passwordConfirm) {
+        showToast("비밀번호가 일치하지 않습니다.");
+        return;
+      }
+      const btn = document.querySelector("#signup-submit-btn");
+      btn.disabled = true;
+      try {
+        const { error } = await supabaseClient.auth.signUp({ email, password });
+        if (error) {
+          showToast("회원가입에 실패했습니다: " + error.message);
+          return;
+        }
+        showToast("인증 메일을 보냈어요. 메일함에서 링크를 확인해주세요.");
+        signupForm.reset();
+        setAuthMode("login");
+      } catch (err) {
+        console.error("회원가입 중 오류:", err);
+        showToast("회원가입 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.");
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    logoutBtn.addEventListener("click", async () => {
+      await supabaseClient.auth.signOut();
     });
 
     // ---------- 카테고리 select / 필터 버튼 초기화 ----------
@@ -1373,6 +1561,7 @@
     initCategoryOptions();
     initCategoryFilter();
     renderList();
+    initAuth();
   </script>
 </body>
 </html>

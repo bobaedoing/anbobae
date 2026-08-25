@@ -4,8 +4,13 @@
 // news-archive 앱의 등록 폼과 동일한 구조(title/date/press/category/region/
 // keywords/bon/kkae/jeok)로 결과를 JSON으로 돌려준다.
 //
-// 이 파일은 Supabase 쪽 코드이며, news-archive 앱 프론트엔드는 아직 이 함수를
-// 호출하지 않는다. (5단계: Edge Function 단독 동작 확인까지만)
+// 로그인한 사용자만 호출할 수 있고, profiles.monthly_limit에 따라
+// - null(owner 등 무제한): 차감 없이 바로 분석
+// - 숫자(free 등): 한 달에 그 횟수까지만 호출 가능
+// (C단계: 인증 + 사용자별 한도. 실제 news-archive 프론트엔드는 아직 이 인증
+//  버전을 호출하도록 수정되지 않았다 — 그건 다음 단계에서 진행한다.)
+
+import { createClient } from "npm:@supabase/supabase-js@2";
 
 // ---------------------------------------------------------------------------
 // 사용할 모델 이름을 한 곳에 모아둔다. 나중에 실제로 호출해보고
@@ -63,6 +68,17 @@ const ANALYSIS_INSTRUCTIONS = `당신은 신문 기사 스크랩을 정리하는
 
 반드시 한국어로 작성하고, 정의된 JSON 구조 그대로만 응답하세요.`;
 
+// ---------------------------------------------------------------------------
+// 인증 + 사용량 확인용 Supabase 클라이언트 (서버 전용)
+// SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY는 Supabase가 모든 Edge Function에
+// 자동으로 넣어주는 값이라, 별도로 Secret을 새로 등록할 필요가 없다.
+// service_role 키이므로 절대 프론트엔드로는 나가지 않는다 — 이 파일 안에서만 쓰인다.
+// ---------------------------------------------------------------------------
+const supabaseAdmin = createClient(
+  Deno.env.get("SUPABASE_URL") ?? "",
+  Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "",
+);
+
 Deno.serve(async (req) => {
   // ---------------------------------------------------------------------
   // CORS: 지금은 테스트 단계라 모든 출처를 허용한다.
@@ -84,13 +100,86 @@ Deno.serve(async (req) => {
       headers: { ...corsHeaders, "Content-Type": "application/json; charset=utf-8" },
     });
 
+  // 사용량을 실제로 예약(try_increment_ai_usage 성공)했을 때만 true가 되고,
+  // 그 이후 실패한 경우에만 환불한다. 예약 전에 실패하거나, 애초에 무제한
+  // 사용자라 예약 자체를 안 한 경우에는 절대 환불을 호출하지 않는다.
+  let usageReserved = false;
+  let currentUserId: string | null = null;
+
+  async function failWithRefund(body: unknown, status: number) {
+    if (usageReserved && currentUserId) {
+      try {
+        await supabaseAdmin.rpc("refund_ai_usage", { p_user_id: currentUserId });
+      } catch (err) {
+        console.error("사용량 환불 실패:", err);
+      }
+    }
+    return jsonResponse(body, status);
+  }
+
   if (req.method !== "POST") {
     return jsonResponse({ ok: false, error: "POST 요청만 지원합니다." }, 405);
   }
 
   // ---------------------------------------------------------------------
+  // 0. 로그인 확인 — Authorization 헤더의 사용자 토큰을 검증한다.
+  //    이 프로젝트는 ES256 JWT Signing Key를 사용하므로, 최신 권장 방식인
+  //    getClaims()로 서명·만료를 검증한다 (수동 디코딩하지 않음).
+  // ---------------------------------------------------------------------
+  const authHeader = req.headers.get("Authorization") ?? "";
+  const token = authHeader.startsWith("Bearer ") ? authHeader.slice("Bearer ".length) : "";
+
+  if (!token) {
+    return jsonResponse({ ok: false, error: "로그인이 필요합니다." }, 401);
+  }
+
+  let userId: string;
+  try {
+    const { data: claimsData, error: claimsError } = await supabaseAdmin.auth.getClaims(token);
+    const claims = claimsData?.claims;
+    if (claimsError || !claims || claims.role !== "authenticated" || !claims.sub) {
+      return jsonResponse({ ok: false, error: "로그인이 필요합니다." }, 401);
+    }
+    userId = claims.sub as string;
+  } catch (err) {
+    console.error("토큰 검증 중 오류:", err);
+    return jsonResponse({ ok: false, error: "로그인이 필요합니다." }, 401);
+  }
+  currentUserId = userId;
+
+  // ---------------------------------------------------------------------
+  // 0-1. 사용자 plan/월 한도 확인 (profiles 테이블)
+  //      profiles 행은 회원가입 시 트리거로 자동 생성되므로, 없으면
+  //      비정상 상태다 — 무제한/기본값으로 넘기지 않고 안전하게 거부한다.
+  // ---------------------------------------------------------------------
+  const { data: profile, error: profileError } = await supabaseAdmin
+    .from("profiles")
+    .select("plan, monthly_limit")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (profileError) {
+    console.error("프로필 조회 중 오류:", profileError);
+    return jsonResponse(
+      { ok: false, error: "사용자 정보를 확인하지 못했습니다. 잠시 후 다시 시도해주세요." },
+      500
+    );
+  }
+
+  if (!profile) {
+    console.error("profiles 행이 없는 사용자:", userId);
+    return jsonResponse(
+      { ok: false, error: "사용자 설정을 확인할 수 없어 요청을 처리할 수 없습니다." },
+      403
+    );
+  }
+
+  const isUnlimited = profile.monthly_limit === null;
+
+  // ---------------------------------------------------------------------
   // 1. 요청 바디 파싱 및 검증
   //    { images: ["data:image/jpeg;base64,...", "data:image/png;base64,..."] }
+  //    (사용량을 아직 예약하지 않았으므로, 여기서 실패해도 환불할 것이 없다)
   // ---------------------------------------------------------------------
   let images: string[] = [];
   try {
@@ -115,20 +204,61 @@ Deno.serve(async (req) => {
   }
 
   // ---------------------------------------------------------------------
-  // 2. OPENAI_API_KEY 확인 — 실제 키 값은 코드에 절대 넣지 않고,
+  // 2. 이번 달 사용량 확인 + 원자적 예약
+  //    무제한 사용자(monthly_limit = null)는 이 단계를 완전히 건너뛴다.
+  //    (동시에 두 번 클릭해도 DB 쪽에서 안전하게 하나만 통과한다)
+  // ---------------------------------------------------------------------
+  let currentCount: number | null = null;
+
+  if (!isUnlimited) {
+    const monthlyLimit = profile.monthly_limit as number;
+
+    const { data: usageRow, error: usageError } = await supabaseAdmin
+      .rpc("try_increment_ai_usage", { p_user_id: userId, p_limit: monthlyLimit })
+      .single();
+
+    if (usageError) {
+      console.error("사용량 확인 중 오류:", usageError);
+      return jsonResponse(
+        { ok: false, error: "사용량을 확인하지 못했습니다. 잠시 후 다시 시도해주세요." },
+        500
+      );
+    }
+
+    const usage = usageRow as { allowed: boolean; current_count: number } | null;
+    currentCount = usage?.current_count ?? monthlyLimit;
+
+    if (!usage?.allowed) {
+      // 이미 한도를 다 썼으므로 OpenAI를 호출하지 않는다. 예약된 적이 없으니 환불도 없다.
+      return jsonResponse(
+        {
+          ok: false,
+          error: `이번 달 AI 분석 무료 횟수(${monthlyLimit}회)를 모두 사용했습니다.`,
+          usage: { count: currentCount, limit: monthlyLimit },
+        },
+        429
+      );
+    }
+
+    // 여기서부터는 1회가 실제로 예약된 상태 — 이후 실패하면 반드시 환불해야 한다.
+    usageReserved = true;
+  }
+
+  // ---------------------------------------------------------------------
+  // 3. OPENAI_API_KEY 확인 — 실제 키 값은 코드에 절대 넣지 않고,
   //    Supabase Secret에서만 읽어온다.
   // ---------------------------------------------------------------------
   const apiKey = Deno.env.get("OPENAI_API_KEY");
   if (!apiKey) {
     // 키가 없다는 사실만 알리고, 다른 민감 정보는 노출하지 않는다.
-    return jsonResponse(
+    return failWithRefund(
       { ok: false, error: "서버에 OPENAI_API_KEY가 설정되어 있지 않습니다." },
       500
     );
   }
 
   // ---------------------------------------------------------------------
-  // 3. OpenAI Responses API 호출
+  // 4. OpenAI Responses API 호출
   // ---------------------------------------------------------------------
   const content: Record<string, unknown>[] = [
     { type: "input_text", text: ANALYSIS_INSTRUCTIONS },
@@ -167,7 +297,7 @@ Deno.serve(async (req) => {
     });
   } catch (err) {
     console.error("OpenAI 호출 자체가 실패했습니다:", err);
-    return jsonResponse(
+    return failWithRefund(
       { ok: false, error: "AI 서버에 연결하지 못했습니다. 잠시 후 다시 시도해주세요." },
       502
     );
@@ -178,7 +308,7 @@ Deno.serve(async (req) => {
     // 민감정보 없는 일반적인 메시지만 돌려준다.
     const errText = await openaiRes.text().catch(() => "");
     console.error("OpenAI API 오류:", openaiRes.status, errText);
-    return jsonResponse(
+    return failWithRefund(
       { ok: false, error: `AI 분석 요청이 실패했습니다. (status: ${openaiRes.status})` },
       502
     );
@@ -189,11 +319,11 @@ Deno.serve(async (req) => {
     openaiData = await openaiRes.json();
   } catch (err) {
     console.error("OpenAI 응답 JSON 파싱 실패:", err);
-    return jsonResponse({ ok: false, error: "AI 응답을 해석하지 못했습니다." }, 502);
+    return failWithRefund({ ok: false, error: "AI 응답을 해석하지 못했습니다." }, 502);
   }
 
   // ---------------------------------------------------------------------
-  // 4. 구조화된 결과 텍스트 추출
+  // 5. 구조화된 결과 텍스트 추출
   //    Responses API 응답 형태가 버전에 따라 조금씩 다를 수 있어,
   //    여러 경로를 순서대로 시도해서 실제 텍스트를 찾는다.
   // ---------------------------------------------------------------------
@@ -216,7 +346,7 @@ Deno.serve(async (req) => {
   const rawText = extractOutputText(openaiData);
   if (!rawText) {
     console.error("OpenAI 응답에서 결과 텍스트를 찾지 못했습니다:", JSON.stringify(openaiData));
-    return jsonResponse({ ok: false, error: "AI 분석 결과를 읽어오지 못했습니다." }, 502);
+    return failWithRefund({ ok: false, error: "AI 분석 결과를 읽어오지 못했습니다." }, 502);
   }
 
   let result: Record<string, unknown>;
@@ -224,8 +354,13 @@ Deno.serve(async (req) => {
     result = JSON.parse(rawText);
   } catch (err) {
     console.error("AI 결과 JSON 파싱 실패:", err, rawText);
-    return jsonResponse({ ok: false, error: "AI 분석 결과 형식이 올바르지 않습니다." }, 502);
+    return failWithRefund({ ok: false, error: "AI 분석 결과 형식이 올바르지 않습니다." }, 502);
   }
 
-  return jsonResponse({ ok: true, result });
+  // 성공 — 무제한 사용자는 unlimited만, free 사용자는 예약해둔 count/limit을 돌려준다.
+  const usage = isUnlimited
+    ? { unlimited: true }
+    : { count: currentCount, limit: profile.monthly_limit };
+
+  return jsonResponse({ ok: true, result, usage });
 });
