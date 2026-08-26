@@ -798,8 +798,9 @@
 
   <script>
     /* =========================================================
-       AI 신문 스크랩 아카이브 — 1단계 MVP
-       - AI 분석, DB 연결 없이 localStorage에만 저장합니다.
+       AI 신문 스크랩 아카이브
+       - 기사 데이터는 Supabase DB(articles 테이블)에 사용자별로 저장됩니다.
+       - 사진 원본은 아직 브라우저 IndexedDB에만 저장됩니다 (다음 단계에서 Storage로 이전 예정).
        - 초보자가 읽기 쉽도록 함수를 역할별로 나눠 놓았습니다.
        ========================================================= */
 
@@ -882,6 +883,7 @@
     let formPhotos = [];               // 등록/수정 폼에 지금 붙어있는 사진 미리보기 목록
     let removedExistingPhotoIds = [];  // 수정 중 기존 사진을 뺐을 때, 저장 시 DB에서 지울 id 목록
     let detailObjectUrls = [];         // 상세 모달에서 만든 objectURL (닫을 때 정리용)
+    let articles = [];  // 로그인한 사용자의 기사 목록 (Supabase에서 불러온 결과를 담아두는 메모리 캐시)
 
     // ---------- 엘리먼트 참조 ----------
     const navButtons = document.querySelectorAll("[data-view]");
@@ -924,6 +926,10 @@
     const showLoginFromResetBtn = document.querySelector("#show-login-from-reset-btn");
 
     // ---------- localStorage 읽기/쓰기 ----------
+    // ⚠️ 기사 데이터는 이제 Supabase(articles 테이블)에서 불러옵니다.
+    //    이 두 함수는 지우지 않고, 다음 단계에서 만들 "기존 로컬 기사 → Supabase
+    //    1회 마이그레이션" 기능이 그대로 재사용할 예정입니다. 지금은 다른 곳에서
+    //    호출하지 않으며, 기존 localStorage 데이터도 건드리지 않습니다.
     function loadArticles() {
       try {
         return JSON.parse(localStorage.getItem(STORAGE_KEY)) || [];
@@ -1208,6 +1214,9 @@
           exitEditMode();
         }
         setView(btn.dataset.view);
+        if (btn.dataset.view === "list") {
+          loadArticlesFromCloud();
+        }
       });
     });
 
@@ -1257,8 +1266,10 @@
         const authView = document.querySelector("#view-auth");
         if (authView.classList.contains("active")) {
           setView("list");
+          loadArticlesFromCloud();
         }
       } else {
+        articles = []; // 로그아웃하면 이전 사용자의 기사를 화면 캐시에서 비운다.
         views.forEach(v => v.classList.toggle("active", v.id === "view-auth"));
         navButtons.forEach(b => b.classList.remove("active"));
         setAuthMode("login");
@@ -1281,6 +1292,73 @@
         }
         applyAuthState();
       });
+    }
+
+    // ---------- Supabase 기사 CRUD ----------
+    // 세션이 없는데 기사 등록/조회/삭제가 시도되면, 그냥 오류를 내고 끝내지 않고
+    // 로그인 화면으로 돌려보낸다.
+    function requireSession() {
+      if (currentSession) return true;
+      showToast("로그인이 필요합니다.");
+      applyAuthState();
+      return false;
+    }
+
+    // 프론트(camelCase)에서 쓰는 기사 필드 → Supabase articles 테이블 컬럼(snake_case)
+    function toArticleRow(payload) {
+      return {
+        title: payload.title,
+        article_date: payload.date,
+        press: payload.press,
+        category: payload.category,
+        region: payload.region || null,
+        keywords: payload.keywords || [],
+        bon: payload.bon || null,
+        kkae: payload.kkae || null,
+        jeok: payload.jeok || null,
+        images: payload.images || [],
+        source_url: payload.sourceUrl ?? null
+      };
+    }
+
+    // Supabase articles 테이블 한 행(snake_case) → 프론트에서 쓰는 기사 객체(camelCase)
+    function fromArticleRow(row) {
+      return {
+        id: row.id,
+        createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
+        title: row.title,
+        date: row.article_date,
+        press: row.press,
+        category: row.category,
+        region: row.region,
+        keywords: row.keywords || [],
+        bon: row.bon,
+        kkae: row.kkae,
+        jeok: row.jeok,
+        images: row.images || [],
+        sourceUrl: row.source_url
+      };
+    }
+
+    // 로그인한 사용자의 기사를 Supabase에서 불러와 메모리 캐시(articles)에 채우고 화면에 반영한다.
+    // RLS 정책이 "auth.uid() = user_id"만 허용하므로, 여기서는 별도 조건 없이
+    // 전체 조회만 해도 로그인한 사용자의 기사만 돌아온다.
+    async function loadArticlesFromCloud() {
+      if (!requireSession()) return;
+
+      const { data, error } = await supabaseClient
+        .from("articles")
+        .select("*")
+        .order("created_at", { ascending: false });
+
+      if (error) {
+        console.error("기사 목록을 불러오지 못했습니다:", error);
+        showToast("기사 목록을 불러오지 못했습니다. 잠시 후 다시 시도해주세요.");
+        return;
+      }
+
+      articles = (data || []).map(fromArticleRow);
+      renderList();
     }
 
     loginForm.addEventListener("submit", async e => {
@@ -1417,7 +1495,7 @@
 
     // ---------- 목록 렌더링 ----------
     function getFilteredArticles() {
-      const items = loadArticles();
+      const items = articles;
       const query = searchInput.value.trim().toLowerCase();
 
       return items
@@ -1437,7 +1515,7 @@
       resultCountEl.textContent = `${items.length}건`;
 
       if (!items.length) {
-        const total = loadArticles().length;
+        const total = articles.length;
         articleListEl.innerHTML = total === 0
           ? `<div class="empty-state">
                <p>아직 등록된 기사가 없습니다.<br>기사 등록 화면에서 첫 스크랩을 남겨보세요.</p>
@@ -1477,9 +1555,10 @@
       `;
     }
 
-    function loadSampleArticle() {
+    async function loadSampleArticle() {
+      if (!requireSession()) return;
+
       const sample = {
-        id: makeId(),
         title: "OO지구 도시개발사업 실시계획 승인",
         date: new Date().toISOString().slice(0, 10),
         press: "예시일보",
@@ -1489,12 +1568,18 @@
         bon: "OO지구 도시개발사업의 실시계획이 승인되어 착공 절차가 본격화될 예정이다.",
         kkae: "검토·발표 단계를 지나 승인까지 왔다는 것은 사업 추진 속도가 빨라지고 있다는 신호다.",
         jeok: "인근 지역 시세 흐름과 착공 시점을 함께 추적해두면 투자 타이밍을 잡는 데 참고할 수 있다.",
-        images: [],
-        createdAt: Date.now()
+        images: []
       };
-      const items = loadArticles();
-      items.unshift(sample);
-      saveArticles(items);
+
+      const row = { id: makeId(), user_id: currentSession.user.id, ...toArticleRow(sample) };
+      const { data: inserted, error } = await supabaseClient.from("articles").insert(row).select().single();
+      if (error) {
+        console.error("샘플 기사 저장 실패:", error);
+        showToast("샘플 기사를 불러오지 못했습니다. 잠시 후 다시 시도해주세요.");
+        return;
+      }
+
+      articles.unshift(fromArticleRow(inserted));
       renderList();
       showToast("샘플 기사를 불러왔어요.");
     }
@@ -1503,7 +1588,7 @@
 
     // ---------- 상세 모달 ----------
     async function openDetail(id) {
-      const item = loadArticles().find(a => a.id === id);
+      const item = articles.find(a => a.id === id);
       if (!item) return;
       activeDetailId = id;
 
@@ -1569,10 +1654,18 @@
     document.querySelector("#modal-delete-btn").addEventListener("click", async () => {
       if (!activeDetailId) return;
       if (!confirm("이 기사를 삭제할까요? 되돌릴 수 없습니다.")) return;
+      if (!requireSession()) return;
 
-      const items = loadArticles();
-      const target = items.find(a => a.id === activeDetailId);
-      saveArticles(items.filter(a => a.id !== activeDetailId));
+      const target = articles.find(a => a.id === activeDetailId);
+
+      const { error } = await supabaseClient.from("articles").delete().eq("id", activeDetailId);
+      if (error) {
+        console.error("기사 삭제 실패:", error);
+        showToast("기사를 삭제하지 못했습니다. 잠시 후 다시 시도해주세요.");
+        return;
+      }
+
+      articles = articles.filter(a => a.id !== activeDetailId);
       closeDetail();
       renderList();
       showToast("기사를 삭제했어요.");
@@ -1587,7 +1680,7 @@
 
     document.querySelector("#modal-edit-btn").addEventListener("click", () => {
       if (!activeDetailId) return;
-      const item = loadArticles().find(a => a.id === activeDetailId);
+      const item = articles.find(a => a.id === activeDetailId);
       if (!item) return;
       enterEditMode(item);
       closeDetail();
@@ -1645,6 +1738,8 @@
         return;
       }
 
+      if (!requireSession()) return;
+
       try {
         // 새로 추가한 사진만 IndexedDB에 저장하고, 기존 사진은 그대로 둔다.
         const finalImages = [];
@@ -1662,16 +1757,34 @@
         }
         payload.images = finalImages;
 
-        const items = loadArticles();
-
         if (editingId) {
-          const idx = items.findIndex(a => a.id === editingId);
-          if (idx !== -1) items[idx] = { ...items[idx], ...payload };
-          saveArticles(items);
+          const { data: updated, error } = await supabaseClient
+            .from("articles")
+            .update(toArticleRow(payload))
+            .eq("id", editingId)
+            .select()
+            .single();
+          if (error) {
+            console.error("기사 수정 실패:", error);
+            showToast("기사를 수정하지 못했습니다. 잠시 후 다시 시도해주세요.");
+            return;
+          }
+          const idx = articles.findIndex(a => a.id === editingId);
+          if (idx !== -1) articles[idx] = fromArticleRow(updated);
           showToast("기사를 수정했어요.");
         } else {
-          items.unshift({ id: makeId(), createdAt: Date.now(), ...payload });
-          saveArticles(items);
+          const row = { id: makeId(), user_id: currentSession.user.id, ...toArticleRow(payload) };
+          const { data: inserted, error } = await supabaseClient
+            .from("articles")
+            .insert(row)
+            .select()
+            .single();
+          if (error) {
+            console.error("기사 저장 실패:", error);
+            showToast("기사를 저장하지 못했습니다. 잠시 후 다시 시도해주세요.");
+            return;
+          }
+          articles.unshift(fromArticleRow(inserted));
           showToast("기사를 저장했어요.");
         }
 
