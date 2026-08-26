@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="신문 기사를 스크랩하고 본·깨·적으로 정리해 오래 쌓아두는 개인 아카이브 (1단계 MVP)">
   <title>AI 신문 스크랩 아카이브</title>
+  <link rel="stylesheet" as="style" crossorigin
+    href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@1.3.9/dist/web/static/pretendard.css">
   <style>
     :root {
       --paper: #faf6ee;
@@ -17,6 +19,9 @@
       --stamp: #a13e2b;
       --stamp-soft: #f4e2dc;
       --shadow: 0 18px 46px rgba(41, 32, 15, .08);
+      /* UI/본문용 기본 산세리프 폰트. 제목류(h1, 기사/카드/모달 제목 등)는
+         body의 세리프(Nanum Myeongjo, 신문 느낌)를 그대로 상속하므로 건드리지 않는다. */
+      --font-sans: "Pretendard", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
     }
 
     * { box-sizing: border-box; }
@@ -69,7 +74,7 @@
     }
     .brand-text { font-size: 19px; font-weight: 700; letter-spacing: -.02em; }
     .brand-sub {
-      font-family: "Apple SD Gothic Neo", sans-serif;
+      font-family: var(--font-sans);
       font-size: 11px;
       color: var(--muted);
       letter-spacing: .08em;
@@ -82,7 +87,7 @@
       padding: 9px 18px;
       background: transparent;
       color: var(--muted);
-      font-family: "Apple SD Gothic Neo", sans-serif;
+      font-family: var(--font-sans);
       font-size: 13px;
       font-weight: 700;
     }
@@ -100,7 +105,7 @@
       gap: 9px;
       margin: 0 0 10px;
       color: var(--stamp);
-      font-family: "Apple SD Gothic Neo", sans-serif;
+      font-family: var(--font-sans);
       font-size: 12px;
       font-weight: 800;
       letter-spacing: .14em;
@@ -116,8 +121,13 @@
       margin: 10px 0 0;
       max-width: 560px;
       color: var(--muted);
-      font-family: "Apple SD Gothic Neo", sans-serif;
+      font-family: var(--font-sans);
       font-size: 13.5px;
+    }
+    /* 보관함 화면 설명문만 데스크톱에서 한 줄로 자연스럽게 보이도록 폭 제한을 풀어준다.
+       (다른 화면의 .page-head p 공통 규칙은 그대로 둔다) */
+    #view-list .page-head p {
+      max-width: none;
     }
 
     /* ---------- 등록 폼 ---------- */
@@ -132,14 +142,14 @@
     .field { display: grid; gap: 7px; }
     .field.full { grid-column: 1 / -1; }
     .field label {
-      font-family: "Apple SD Gothic Neo", sans-serif;
+      font-family: var(--font-sans);
       font-size: 12px;
       font-weight: 700;
       color: var(--ink);
     }
     .field label .req { color: var(--stamp); margin-left: 2px; }
     .field small.hint {
-      font-family: "Apple SD Gothic Neo", sans-serif;
+      font-family: var(--font-sans);
       color: var(--muted);
       font-size: 11px;
     }
@@ -156,7 +166,7 @@
       border-color: var(--accent);
       box-shadow: 0 0 0 3px var(--accent-soft);
     }
-    textarea { min-height: 84px; resize: vertical; font-family: "Apple SD Gothic Neo", sans-serif; font-size: 14px; }
+    textarea { min-height: 84px; resize: vertical; font-family: var(--font-sans); font-size: 14px; }
 
     .bogaejeok-grid { display: grid; grid-template-columns: 1fr; gap: 16px; margin-top: 4px; }
     .bogaejeok-grid .field {
@@ -184,7 +194,7 @@
       box-shadow: var(--shadow);
     }
     .photo-card > label {
-      font-family: "Apple SD Gothic Neo", sans-serif;
+      font-family: var(--font-sans);
       font-size: 12px;
       font-weight: 700;
       color: var(--ink);
@@ -206,14 +216,14 @@
       border: 1px solid var(--ink);
       border-radius: 999px;
       padding: 9px 16px;
-      font-family: "Apple SD Gothic Neo", sans-serif;
+      font-family: var(--font-sans);
       font-size: 12.5px;
       font-weight: 700;
       background: var(--card);
     }
     .photo-pick-btn:hover { background: #f1ece0; }
     .photo-drop-hint {
-      font-family: "Apple SD Gothic Neo", sans-serif;
+      font-family: var(--font-sans);
       font-size: 11.5px;
       color: var(--muted);
     }
@@ -248,7 +258,7 @@
       display: inline-flex;
       align-items: center;
       gap: 4px;
-      font-family: "Apple SD Gothic Neo", sans-serif;
+      font-family: var(--font-sans);
       font-size: 11px;
       color: var(--muted);
     }
@@ -276,7 +286,7 @@
       border: 1px solid var(--ink);
       border-radius: 999px;
       padding: 11px 22px;
-      font-family: "Apple SD Gothic Neo", sans-serif;
+      font-family: var(--font-sans);
       font-size: 13px;
       font-weight: 700;
       background: transparent;
@@ -297,7 +307,7 @@
       border-radius: 999px;
       background: var(--stamp-soft);
       color: var(--stamp);
-      font-family: "Apple SD Gothic Neo", sans-serif;
+      font-family: var(--font-sans);
       font-size: 12px;
       font-weight: 700;
     }
@@ -330,7 +340,7 @@
       opacity: .6;
     }
     .result-count {
-      font-family: "Apple SD Gothic Neo", sans-serif;
+      font-family: var(--font-sans);
       font-size: 12px;
       color: var(--muted);
       white-space: nowrap;
@@ -348,7 +358,7 @@
       padding: 7px 14px;
       background: var(--card);
       color: var(--muted);
-      font-family: "Apple SD Gothic Neo", sans-serif;
+      font-family: var(--font-sans);
       font-size: 12.5px;
       font-weight: 700;
     }
@@ -378,13 +388,13 @@
       display: inline-block;
       padding: 4px 10px;
       border-radius: 999px;
-      font-family: "Apple SD Gothic Neo", sans-serif;
+      font-family: var(--font-sans);
       font-size: 11px;
       font-weight: 800;
       white-space: nowrap;
     }
     .card-date {
-      font-family: "Apple SD Gothic Neo", sans-serif;
+      font-family: var(--font-sans);
       font-size: 11px;
       color: var(--muted);
       white-space: nowrap;
@@ -396,12 +406,12 @@
       letter-spacing: -.01em;
     }
     .card-meta {
-      font-family: "Apple SD Gothic Neo", sans-serif;
+      font-family: var(--font-sans);
       font-size: 12px;
       color: var(--muted);
     }
     .card-preview {
-      font-family: "Apple SD Gothic Neo", sans-serif;
+      font-family: var(--font-sans);
       font-size: 13px;
       color: #4b463b;
       display: -webkit-box;
@@ -411,7 +421,7 @@
     }
     .keyword-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
     .kw {
-      font-family: "Apple SD Gothic Neo", sans-serif;
+      font-family: var(--font-sans);
       font-size: 11px;
       color: var(--accent);
       background: var(--accent-soft);
@@ -426,7 +436,7 @@
       border-radius: 20px;
       text-align: center;
       color: var(--muted);
-      font-family: "Apple SD Gothic Neo", sans-serif;
+      font-family: var(--font-sans);
     }
     .empty-state p { margin: 0 0 16px; font-size: 13.5px; }
 
@@ -469,7 +479,7 @@
       gap: 10px;
       align-items: center;
       margin: 10px 0 22px;
-      font-family: "Apple SD Gothic Neo", sans-serif;
+      font-family: var(--font-sans);
       font-size: 12.5px;
       color: var(--muted);
     }
@@ -479,7 +489,7 @@
       align-items: center;
       gap: 6px;
       margin-bottom: 8px;
-      font-family: "Apple SD Gothic Neo", sans-serif;
+      font-family: var(--font-sans);
       font-size: 12px;
       font-weight: 800;
     }
@@ -490,7 +500,7 @@
       padding: 14px 16px;
       border-radius: 10px;
       background: #f7f3e9;
-      font-family: "Apple SD Gothic Neo", sans-serif;
+      font-family: var(--font-sans);
       font-size: 14px;
       white-space: pre-wrap;
       word-break: keep-all;
@@ -514,7 +524,7 @@
       border-radius: 12px;
       color: #fff;
       background: var(--ink);
-      font-family: "Apple SD Gothic Neo", sans-serif;
+      font-family: var(--font-sans);
       font-size: 13px;
       box-shadow: var(--shadow);
       opacity: 0;
