@@ -228,6 +228,8 @@
       color: var(--muted);
     }
     .photo-thumbs { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+    /* 사진/URL 등록 모드 전환 버튼 줄. 버튼 자체는 기존 .chip-btn 스타일을 그대로 쓴다. */
+    .mode-toggle { display: flex; gap: 8px; margin-bottom: 14px; }
     .photo-thumb {
       position: relative;
       width: 96px;
@@ -686,21 +688,37 @@
         </div>
 
         <div class="photo-card">
-          <label for="f-photos">기사 사진 올리기 <small class="hint">· JPG, PNG · 여러 장 올릴 수 있어요 (기사 1건이 2~3장으로 나뉠 수 있으니까요)</small></label>
-          <div class="photo-drop">
-            <input type="file" id="f-photos" accept="image/jpeg,image/png,image/jpg" multiple hidden>
-            <label for="f-photos" class="photo-pick-btn">📷 사진 선택하기</label>
-            <!-- capture="environment"는 모바일에서 갤러리 대신 후면 카메라를 바로 여는 별도 입력이다.
-                 (capture를 원래 #f-photos에 붙이면 일부 모바일 브라우저에서 갤러리 선택 옵션이
-                 사라지므로, 갤러리용 입력과 완전히 분리해 두었다.) -->
-            <input type="file" id="f-camera" accept="image/jpeg,image/png,image/jpg" capture="environment" hidden>
-            <label for="f-camera" class="photo-pick-btn">📸 카메라로 촬영</label>
-            <button type="button" class="btn ghost" id="ai-analyze-btn">✨ AI로 분석하기</button>
-            <span class="photo-drop-hint">선택한 사진은 미리보기로만 보이고, 아래 "저장하기"를 눌러야 실제로 저장돼요</span>
+          <div class="mode-toggle" id="register-mode-toggle">
+            <button type="button" class="chip-btn active" id="mode-photo-btn" data-mode="photo">📷 사진으로 등록</button>
+            <button type="button" class="chip-btn" id="mode-url-btn" data-mode="url">🔗 URL로 등록</button>
           </div>
+
+          <div id="photo-mode-section">
+            <label for="f-photos">기사 사진 올리기 <small class="hint">· JPG, PNG · 여러 장 올릴 수 있어요 (기사 1건이 2~3장으로 나뉠 수 있으니까요)</small></label>
+            <div class="photo-drop">
+              <input type="file" id="f-photos" accept="image/jpeg,image/png,image/jpg" multiple hidden>
+              <label for="f-photos" class="photo-pick-btn">📷 사진 선택하기</label>
+              <!-- capture="environment"는 모바일에서 갤러리 대신 후면 카메라를 바로 여는 별도 입력이다.
+                   (capture를 원래 #f-photos에 붙이면 일부 모바일 브라우저에서 갤러리 선택 옵션이
+                   사라지므로, 갤러리용 입력과 완전히 분리해 두었다.) -->
+              <input type="file" id="f-camera" accept="image/jpeg,image/png,image/jpg" capture="environment" hidden>
+              <label for="f-camera" class="photo-pick-btn">📸 카메라로 촬영</label>
+              <button type="button" class="btn ghost" id="ai-analyze-btn">✨ AI로 분석하기</button>
+              <span class="photo-drop-hint">선택한 사진은 미리보기로만 보이고, 아래 "저장하기"를 눌러야 실제로 저장돼요</span>
+            </div>
+            <div class="photo-thumbs" id="photo-thumbs"></div>
+          </div>
+
+          <div id="url-mode-section" hidden>
+            <label for="f-article-url">기사 URL 붙여넣기</label>
+            <div class="photo-drop">
+              <input type="url" id="f-article-url" placeholder="기사 URL을 붙여넣어 주세요" style="flex:1 1 220px; width:auto;">
+              <button type="button" class="btn ghost" id="url-analyze-btn">🔗 AI로 분석하기</button>
+            </div>
+          </div>
+
           <div class="photo-drop-hint" id="ai-offline-hint" hidden></div>
           <div class="photo-drop-hint" id="ai-usage-hint" hidden></div>
-          <div class="photo-thumbs" id="photo-thumbs"></div>
         </div>
 
         <form class="form-card" id="article-form">
@@ -937,6 +955,8 @@
     let removedExistingPhotoIds = [];  // 수정 중 기존 사진을 뺐을 때, 저장 성공 후 Storage에서 지울 경로(path) 목록
     let detailObjectUrls = [];         // 상세 모달에서 만든 objectURL (닫을 때 정리용)
     let articles = [];  // 로그인한 사용자의 기사 목록 (Supabase에서 불러온 결과를 담아두는 메모리 캐시)
+    let registerMode = "photo";  // 기사 등록 화면의 현재 모드: "photo" | "url"
+    let formSourceUrl = null;    // URL 분석으로 채워진 canonical URL (사진으로 등록하면 null 유지)
 
     // ---------- 엘리먼트 참조 ----------
     const navButtons = document.querySelectorAll("[data-view]");
@@ -964,6 +984,13 @@
     const aiOfflineHintEl = document.querySelector("#ai-offline-hint");
     const aiUsageHintEl = document.querySelector("#ai-usage-hint");
     const modalGalleryEl = document.querySelector("#modal-gallery");
+
+    const modePhotoBtn = document.querySelector("#mode-photo-btn");
+    const modeUrlBtn = document.querySelector("#mode-url-btn");
+    const photoModeSection = document.querySelector("#photo-mode-section");
+    const urlModeSection = document.querySelector("#url-mode-section");
+    const articleUrlInput = document.querySelector("#f-article-url");
+    const urlAnalyzeBtn = document.querySelector("#url-analyze-btn");
 
     // ---------- 엘리먼트 참조: 로그인/회원가입 ----------
     const appNav = document.querySelector("#app-nav");
@@ -1087,6 +1114,9 @@
       formPhotos = [];
       removedExistingPhotoIds = [];
       renderPhotoThumbs();
+      // form.reset()이 일어나는 모든 경우(비우기 버튼, 수정 취소, 저장 완료 등)에
+      // URL 분석으로 채워진 sourceUrl도 함께 비워서 다음 새 기사에 잘못 남지 않게 한다.
+      formSourceUrl = null;
     }
 
     // 수정 화면에 들어갈 때, 이미 저장돼 있던 사진들을 Storage에서 signed URL로 불러와 미리보기로 채운다.
@@ -1236,8 +1266,83 @@
       }
     });
 
-    // 온라인/오프라인 상태에 따라 AI 분석 버튼을 켜고 끈다.
-    // 지금 분석이 진행 중일 때는 건드리지 않는다 (분석 자체의 disabled 처리는 위 클릭 핸들러가 담당).
+    // ---------- 사진 / URL 등록 모드 전환 ----------
+    // 모드 전환은 화면 표시만 바꾼다. 이미 입력해둔 제목/날짜/언론사/카테고리/지역/
+    // 키워드/본/깨/적 값은 절대 건드리지 않는다.
+    function setRegisterMode(mode) {
+      registerMode = mode;
+      photoModeSection.hidden = mode !== "photo";
+      urlModeSection.hidden = mode !== "url";
+      modePhotoBtn.classList.toggle("active", mode === "photo");
+      modeUrlBtn.classList.toggle("active", mode === "url");
+    }
+
+    modePhotoBtn.addEventListener("click", () => setRegisterMode("photo"));
+    modeUrlBtn.addEventListener("click", () => setRegisterMode("url"));
+
+    // ---------- URL 기사 분석 ----------
+    let urlAnalyzing = false; // 중복 클릭으로 두 번 호출되는 것을 막는 플래그
+
+    urlAnalyzeBtn.addEventListener("click", async () => {
+      if (urlAnalyzing) return;
+
+      if (!navigator.onLine) {
+        showToast("오프라인 상태입니다. 인터넷 연결 후 다시 시도해주세요.");
+        return;
+      }
+
+      const url = articleUrlInput.value.trim();
+      if (!url) {
+        showToast("먼저 기사 URL을 입력해주세요.");
+        return;
+      }
+
+      urlAnalyzing = true;
+      urlAnalyzeBtn.disabled = true;
+      const originalLabel = urlAnalyzeBtn.textContent;
+      urlAnalyzeBtn.textContent = "⏳ AI 분석 중...";
+
+      try {
+        const { data, error } = await supabaseClient.functions.invoke("analyze-url", {
+          body: { url },
+        });
+
+        if (error) {
+          // 기술적인 오류 코드/메시지를 그대로 보여주지 않고, 사용량 초과만 별도로 구분한다.
+          // (크롤링 차단/로그인 필요/JS 렌더링 페이지/본문추출 실패 등은 전부 아래 기본
+          //  안내 문구로 통일 — 사용자가 다음에 뭘 해야 할지 알 수 있게 사진 등록으로 유도한다.)
+          let message = "자동으로 기사를 읽지 못했습니다. 기사 캡처 이미지를 올려 분석해 주세요.";
+          let usage = null;
+          try {
+            const errBody = await error.context.json();
+            if (errBody?.usage) usage = errBody.usage;
+            if (errBody?.code === "USAGE_LIMIT_EXCEEDED") {
+              message = "이번 달 무료 AI 분석 횟수를 모두 사용했습니다.";
+            }
+          } catch (parseErr) {
+            console.error("URL 분석 오류 응답을 읽지 못했습니다:", parseErr);
+          }
+          showToast(message);
+          updateUsageHint(usage);
+          return; // 입력한 URL과 폼 값은 그대로 유지
+        }
+
+        applyAiResultToForm(data.result);
+        formSourceUrl = data.sourceUrl || null;
+        updateUsageHint(data.usage);
+        showToast("AI 분석이 완료되었습니다. 내용을 확인하고 수정한 뒤 저장해주세요.");
+      } catch (err) {
+        console.error("URL 분석 중 오류:", err);
+        showToast("자동으로 기사를 읽지 못했습니다. 기사 캡처 이미지를 올려 분석해 주세요.");
+      } finally {
+        urlAnalyzing = false;
+        urlAnalyzeBtn.disabled = !navigator.onLine;
+        urlAnalyzeBtn.textContent = originalLabel;
+      }
+    });
+
+    // 온라인/오프라인 상태에 따라 AI 분석 버튼(사진/URL 둘 다)을 켜고 끈다.
+    // 지금 분석이 진행 중일 때는 건드리지 않는다 (분석 자체의 disabled 처리는 각 클릭 핸들러가 담당).
     function updateOnlineStatus() {
       const online = navigator.onLine;
       aiOfflineHintEl.hidden = online;
@@ -1247,6 +1352,9 @@
       }
       if (!aiAnalyzing) {
         aiAnalyzeBtn.disabled = !online;
+      }
+      if (!urlAnalyzing) {
+        urlAnalyzeBtn.disabled = !online;
       }
     }
 
@@ -1755,6 +1863,10 @@
       form.bon.value = item.bon || "";
       form.kkae.value = item.kkae || "";
       form.jeok.value = item.jeok || "";
+      // 이 기사가 가지고 있던 sourceUrl을 그대로 이어받는다 (없으면 null).
+      // 이번 단계에서는 URL 재분석 기능은 추가하지 않으므로, 사진 모드로 고정해서 보여준다.
+      formSourceUrl = item.sourceUrl || null;
+      setRegisterMode("photo");
       loadExistingPhotosIntoForm(item.images || []);
 
       registerHeading.textContent = "기사 수정";
@@ -1766,6 +1878,7 @@
     function exitEditMode() {
       editingId = null;
       form.reset();
+      setRegisterMode("photo"); // 새 기사 등록의 기본 상태는 항상 사진 모드
       registerHeading.textContent = "기사 등록";
       submitBtn.textContent = "기사 저장하기";
       editingFlag.classList.remove("show");
@@ -1786,7 +1899,8 @@
         keywords: parseKeywords(data.get("keywords")),
         bon: String(data.get("bon") || "").trim(),
         kkae: String(data.get("kkae") || "").trim(),
-        jeok: String(data.get("jeok") || "").trim()
+        jeok: String(data.get("jeok") || "").trim(),
+        sourceUrl: formSourceUrl
       };
 
       if (!payload.title || !payload.date || !payload.press || !payload.category) {
