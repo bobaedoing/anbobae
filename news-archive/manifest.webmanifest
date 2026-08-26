@@ -1,0 +1,24 @@
+{
+  "name": "신문 스크랩",
+  "short_name": "스크랩",
+  "description": "신문 기사를 스크랩하고 본·깨·적으로 정리해 쌓아두는 개인 리서치 아카이브",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "theme_color": "#faf6ee",
+  "background_color": "#faf6ee",
+  "icons": [
+    {
+      "src": "icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
