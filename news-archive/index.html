@@ -485,6 +485,8 @@
       font-size: 12.5px;
       color: var(--muted);
     }
+    .modal-meta a { color: var(--accent); font-weight: 700; text-decoration: none; }
+    .modal-meta a:hover { text-decoration: underline; }
     .modal-section { margin-bottom: 18px; }
     .modal-section .label {
       display: inline-flex;
@@ -1664,7 +1666,13 @@
         .filter(a => activeCategory === "전체" || a.category === activeCategory)
         .filter(a => {
           if (!query) return true;
-          const haystack = [a.title, a.region, (a.keywords || []).join(" ")]
+          // title/press/category/region/keywords/bon/kkae/jeok을 모두 검색 대상으로 삼는다.
+          // 배열인 keywords는 join으로 합치고, join()은 null/undefined를 빈 문자열로
+          // 안전하게 처리하므로 나머지 필드도 별도 방어 코드 없이 그대로 넣어도 된다.
+          const haystack = [
+            a.title, a.press, a.category, a.region,
+            (a.keywords || []).join(" "), a.bon, a.kkae, a.jeok
+          ]
             .join(" ")
             .toLowerCase();
           return haystack.includes(query);
@@ -1761,8 +1769,15 @@
       modalCat.style.color = color.fg;
 
       document.querySelector("#modal-title").textContent = item.title;
-      document.querySelector("#modal-meta").textContent =
-        [formatDate(item.date), item.press, item.region].filter(Boolean).join(" · ");
+      const metaParts = [formatDate(item.date), item.press, item.region].filter(Boolean).map(escapeText);
+      // URL로 등록한 기사만 sourceUrl이 있고, 사진으로 등록한 기사는 없다(변화 없음).
+      // URL 자체를 그대로 노출하지 않고 짧은 문구로만 링크를 건다.
+      if (item.sourceUrl) {
+        metaParts.push(
+          `<a href="${escapeText(item.sourceUrl)}" target="_blank" rel="noopener noreferrer">🔗 원문 기사 보기</a>`
+        );
+      }
+      document.querySelector("#modal-meta").innerHTML = metaParts.join(" · ");
 
       const kwEl = document.querySelector("#modal-keywords");
       kwEl.innerHTML = (item.keywords || []).map(k => `<span class="kw">#${escapeText(k)}</span>`).join("");
