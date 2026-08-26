@@ -800,7 +800,8 @@
     /* =========================================================
        AI 신문 스크랩 아카이브
        - 기사 데이터는 Supabase DB(articles 테이블)에 사용자별로 저장됩니다.
-       - 사진 원본은 아직 브라우저 IndexedDB에만 저장됩니다 (다음 단계에서 Storage로 이전 예정).
+       - 사진 원본은 Supabase Storage(article-images 버킷)에 사용자별 경로로 저장됩니다.
+       - 예전에 쓰던 IndexedDB 사진 저장 코드는 지우지 않고 남겨뒀지만, 이제 호출되지 않습니다.
        - 초보자가 읽기 쉽도록 함수를 역할별로 나눠 놓았습니다.
        ========================================================= */
 
@@ -825,7 +826,9 @@
       "기타":   { bg: "#ececec", fg: "#555" }
     };
 
-    // ---------- 사진 저장 (IndexedDB) ----------
+    // ---------- 사진 저장 (IndexedDB) — 더 이상 사용하지 않음 ----------
+    // ⚠️ 사진은 이제 아래 "사진 저장 (Supabase Storage)" 섹션에서 처리합니다.
+    //    이 블록은 삭제/리팩터링하지 않고 그대로 남겨뒀을 뿐이며, 지금은 어디서도 호출하지 않습니다.
     // localStorage는 텍스트 전용 저장공간이라 보통 5~10MB밖에 되지 않습니다.
     // 사진을 여기에 그대로 넣으면 금방 용량이 가득 차서 저장이 실패할 수 있으므로,
     // 사진 원본은 브라우저 내장 데이터베이스인 IndexedDB에 따로 저장합니다.
@@ -876,12 +879,62 @@
       }));
     }
 
+    // ---------- 사진 저장 (Supabase Storage) ----------
+    const IMAGE_BUCKET = "article-images";
+
+    // 저장 경로 규칙: {user_id}/{article_id}/{image_id}.{확장자}
+    // Storage RLS 정책이 경로의 첫 번째 폴더 = 로그인한 사용자의 user_id인지로
+    // 접근을 판단하므로, 반드시 이 순서를 지켜야 한다.
+    function getFileExtension(file) {
+      const nameExt = (file.name || "").split(".").pop();
+      if (nameExt && nameExt.length <= 5 && /^[a-z0-9]+$/i.test(nameExt)) return nameExt.toLowerCase();
+      return file.type === "image/png" ? "png" : "jpg";
+    }
+
+    // formPhotos 중 새로 선택된(아직 업로드 안 된) 사진들만 Storage에 올린다.
+    // 도중에 하나라도 실패하면, 이번 시도에서 이미 올라간 파일들만 삭제해서 되돌리고
+    // 예외를 던진다 — 기존 사진이나 DB에는 이 시점까지 아무 영향도 주지 않는다.
+    async function uploadNewPhotos(userId, articleId, newPhotos) {
+      const uploadedPaths = [];
+      const results = [];
+      for (const p of newPhotos) {
+        const path = `${userId}/${articleId}/${p.id}.${getFileExtension(p.file)}`;
+        const { error } = await supabaseClient.storage.from(IMAGE_BUCKET).upload(path, p.file, {
+          contentType: p.file.type,
+          upsert: false
+        });
+        if (error) {
+          console.error("사진 업로드 실패:", error);
+          if (uploadedPaths.length) {
+            const { error: cleanupError } = await supabaseClient.storage.from(IMAGE_BUCKET).remove(uploadedPaths);
+            if (cleanupError) console.error("업로드 실패 후 정리 중 오류:", cleanupError);
+          }
+          throw new Error("PHOTO_UPLOAD_FAILED");
+        }
+        uploadedPaths.push(path);
+        results.push({ id: p.id, name: p.file.name, path });
+      }
+      return results;
+    }
+
+    // article-images는 private 버킷이라 getPublicUrl을 쓸 수 없다. 화면에 보여줄 때만
+    // 그때그때 유효기간이 있는 signed URL을 만들어 쓰고, DB(articles.images)에는 저장하지 않는다.
+    async function getSignedImageUrl(path) {
+      if (!path) return null;
+      const { data, error } = await supabaseClient.storage.from(IMAGE_BUCKET).createSignedUrl(path, 600);
+      if (error) {
+        console.error("사진 표시용 URL 생성 실패:", error);
+        return null;
+      }
+      return data?.signedUrl || null;
+    }
+
     // ---------- 상태 ----------
     let editingId = null;       // 지금 수정 중인 기사 id (없으면 null)
     let activeCategory = "전체"; // 현재 선택된 카테고리 필터
     let activeDetailId = null;  // 모달에 열려있는 기사 id
     let formPhotos = [];               // 등록/수정 폼에 지금 붙어있는 사진 미리보기 목록
-    let removedExistingPhotoIds = [];  // 수정 중 기존 사진을 뺐을 때, 저장 시 DB에서 지울 id 목록
+    let removedExistingPhotoIds = [];  // 수정 중 기존 사진을 뺐을 때, 저장 성공 후 Storage에서 지울 경로(path) 목록
     let detailObjectUrls = [];         // 상세 모달에서 만든 objectURL (닫을 때 정리용)
     let articles = [];  // 로그인한 사용자의 기사 목록 (Supabase에서 불러온 결과를 담아두는 메모리 캐시)
 
@@ -1024,7 +1077,7 @@
       const target = formPhotos.find(p => p.id === photoId);
       if (!target) return;
       URL.revokeObjectURL(target.previewUrl);
-      if (!target.isNew) removedExistingPhotoIds.push(target.id);
+      if (!target.isNew) removedExistingPhotoIds.push(target.path);
       formPhotos = formPhotos.filter(p => p.id !== photoId);
       renderPhotoThumbs();
     }
@@ -1036,7 +1089,7 @@
       renderPhotoThumbs();
     }
 
-    // 수정 화면에 들어갈 때, 이미 저장돼 있던 사진들을 IndexedDB에서 불러와 미리보기로 채운다.
+    // 수정 화면에 들어갈 때, 이미 저장돼 있던 사진들을 Storage에서 signed URL로 불러와 미리보기로 채운다.
     async function loadExistingPhotosIntoForm(images) {
       formPhotos.forEach(p => URL.revokeObjectURL(p.previewUrl));
       formPhotos = [];
@@ -1045,13 +1098,14 @@
 
       for (const img of images) {
         try {
-          const record = await getImageFile(img.id);
-          if (!record) continue;
+          const url = await getSignedImageUrl(img.path);
+          if (!url) continue;
           formPhotos.push({
             id: img.id,
             isNew: false,
-            name: record.name,
-            previewUrl: URL.createObjectURL(record.blob)
+            name: img.name || "",
+            path: img.path,
+            previewUrl: url
           });
           renderPhotoThumbs();
         } catch (err) {
@@ -1618,10 +1672,8 @@
       modalGalleryEl.innerHTML = "";
       for (const img of images) {
         try {
-          const record = await getImageFile(img.id);
-          if (!record) continue;
-          const url = URL.createObjectURL(record.blob);
-          detailObjectUrls.push(url);
+          const url = await getSignedImageUrl(img.path);
+          if (!url) continue;
           modalGalleryEl.insertAdjacentHTML("beforeend",
             `<a href="${url}" target="_blank" rel="noopener" title="새 탭에서 크게 보기"><img src="${url}" alt="첨부 사진"></a>`);
         } catch (err) {
@@ -1670,10 +1722,14 @@
       renderList();
       showToast("기사를 삭제했어요.");
 
-      // 기사에 딸려있던 사진도 IndexedDB에서 함께 지워, 저장공간이 계속 쌓이지 않게 한다.
+      // 기사 row 삭제가 이미 끝난 뒤에만 사진을 Storage에서 정리한다.
+      // (이 정리가 일부 실패해도 기사 자체는 이미 안전하게 지워진 상태라 화면에는
+      //  깨진 기사가 남지 않는다 — 지우지 못한 파일은 콘솔 오류로만 남기고 넘어간다.)
       if (target && target.images && target.images.length) {
-        for (const img of target.images) {
-          try { await deleteImageFile(img.id); } catch (err) { console.error(err); }
+        const paths = target.images.map(img => img.path).filter(Boolean);
+        if (paths.length) {
+          const { error: removeError } = await supabaseClient.storage.from(IMAGE_BUCKET).remove(paths);
+          if (removeError) console.error("기사 삭제 후 사진 정리 실패:", removeError);
         }
       }
     });
@@ -1741,21 +1797,26 @@
       if (!requireSession()) return;
 
       try {
-        // 새로 추가한 사진만 IndexedDB에 저장하고, 기존 사진은 그대로 둔다.
-        const finalImages = [];
-        for (const p of formPhotos) {
-          if (p.isNew) {
-            await saveImageFile(p.id, p.file);
-            finalImages.push({ id: p.id, name: p.file.name });
-          } else {
-            finalImages.push({ id: p.id, name: p.name || "" });
-          }
+        const userId = currentSession.user.id;
+        // 새 기사는 id를 미리 만들어서 Storage 경로({user_id}/{article_id}/...)에 먼저 쓴다.
+        const articleId = editingId || makeId();
+
+        const newPhotos = formPhotos.filter(p => p.isNew);
+        const keptPhotos = formPhotos
+          .filter(p => !p.isNew)
+          .map(p => ({ id: p.id, name: p.name || "", path: p.path }));
+
+        // 새로 추가한 사진만 Storage에 올린다. 하나라도 실패하면 이번에 올라간 파일만
+        // 되돌리고(uploadNewPhotos 내부에서 처리) 여기서 멈춘다 — DB는 아직 건드리지 않는다.
+        let uploadedNew;
+        try {
+          uploadedNew = await uploadNewPhotos(userId, articleId, newPhotos);
+        } catch (uploadErr) {
+          showToast("사진 업로드에 실패했습니다. 잠시 후 다시 시도해주세요.");
+          return;
         }
-        // 수정 중 폼에서 뺀 기존 사진은 이 시점에 실제로 지운다(취소 시에는 지우지 않기 위해).
-        for (const id of removedExistingPhotoIds) {
-          await deleteImageFile(id);
-        }
-        payload.images = finalImages;
+
+        payload.images = [...keptPhotos, ...uploadedNew];
 
         if (editingId) {
           const { data: updated, error } = await supabaseClient
@@ -1766,14 +1827,27 @@
             .single();
           if (error) {
             console.error("기사 수정 실패:", error);
+            // DB 수정이 실패했으니, 이번에 새로 올린 사진만 되돌린다.
+            // (기존 사진은 DB가 아직 그대로 참조하고 있으므로 절대 건드리지 않는다.)
+            if (uploadedNew.length) {
+              const { error: cleanupError } = await supabaseClient.storage
+                .from(IMAGE_BUCKET).remove(uploadedNew.map(i => i.path));
+              if (cleanupError) console.error("수정 실패 후 신규 사진 정리 실패:", cleanupError);
+            }
             showToast("기사를 수정하지 못했습니다. 잠시 후 다시 시도해주세요.");
             return;
+          }
+          // DB가 이미 새 사진 목록으로 안전하게 바뀐 뒤에만, 제거된 기존 사진을 지운다.
+          if (removedExistingPhotoIds.length) {
+            const { error: removeError } = await supabaseClient.storage
+              .from(IMAGE_BUCKET).remove(removedExistingPhotoIds);
+            if (removeError) console.error("제거된 기존 사진 정리 실패:", removeError);
           }
           const idx = articles.findIndex(a => a.id === editingId);
           if (idx !== -1) articles[idx] = fromArticleRow(updated);
           showToast("기사를 수정했어요.");
         } else {
-          const row = { id: makeId(), user_id: currentSession.user.id, ...toArticleRow(payload) };
+          const row = { id: articleId, user_id: userId, ...toArticleRow(payload) };
           const { data: inserted, error } = await supabaseClient
             .from("articles")
             .insert(row)
@@ -1781,6 +1855,12 @@
             .single();
           if (error) {
             console.error("기사 저장 실패:", error);
+            // article INSERT가 실패했으니, 이번에 올린 사진을 orphan으로 남기지 않고 정리한다.
+            if (uploadedNew.length) {
+              const { error: cleanupError } = await supabaseClient.storage
+                .from(IMAGE_BUCKET).remove(uploadedNew.map(i => i.path));
+              if (cleanupError) console.error("저장 실패 후 사진 정리 실패:", cleanupError);
+            }
             showToast("기사를 저장하지 못했습니다. 잠시 후 다시 시도해주세요.");
             return;
           }
@@ -1793,7 +1873,7 @@
         setView("list");
       } catch (err) {
         console.error(err);
-        showToast("사진 저장 중 문제가 발생했어요. 사진 개수나 용량을 줄여서 다시 시도해주세요.");
+        showToast("기사 저장 중 문제가 발생했어요. 잠시 후 다시 시도해주세요.");
       }
     });
 
