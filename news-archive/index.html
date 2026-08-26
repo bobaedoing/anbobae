@@ -587,6 +587,7 @@
           </div>
           <div class="form-actions">
             <button type="button" class="btn ghost" id="show-signup-btn">회원가입으로 전환</button>
+            <button type="button" class="btn ghost" id="show-reset-request-btn">비밀번호 찾기</button>
             <button type="submit" class="btn primary" id="login-submit-btn">로그인</button>
           </div>
         </form>
@@ -609,6 +610,35 @@
           <div class="form-actions">
             <button type="button" class="btn ghost" id="show-login-btn">로그인으로 전환</button>
             <button type="submit" class="btn primary" id="signup-submit-btn">회원가입</button>
+          </div>
+        </form>
+
+        <form class="form-card" id="reset-request-form" hidden>
+          <div class="form-grid">
+            <div class="field full">
+              <label for="reset-request-email">이메일</label>
+              <input id="reset-request-email" name="email" type="email" required>
+            </div>
+          </div>
+          <div class="form-actions">
+            <button type="button" class="btn ghost" id="show-login-from-reset-btn">로그인으로 돌아가기</button>
+            <button type="submit" class="btn primary" id="reset-request-submit-btn">재설정 메일 보내기</button>
+          </div>
+        </form>
+
+        <form class="form-card" id="reset-password-form" hidden>
+          <div class="form-grid">
+            <div class="field full">
+              <label for="reset-password-new">새 비밀번호</label>
+              <input id="reset-password-new" name="password" type="password" required minlength="6">
+            </div>
+            <div class="field full">
+              <label for="reset-password-confirm">새 비밀번호 확인</label>
+              <input id="reset-password-confirm" name="passwordConfirm" type="password" required minlength="6">
+            </div>
+          </div>
+          <div class="form-actions">
+            <button type="submit" class="btn primary" id="reset-password-submit-btn">새 비밀번호 설정</button>
           </div>
         </form>
       </div>
@@ -878,6 +908,10 @@
     const signupForm = document.querySelector("#signup-form");
     const showSignupBtn = document.querySelector("#show-signup-btn");
     const showLoginBtn = document.querySelector("#show-login-btn");
+    const resetRequestForm = document.querySelector("#reset-request-form");
+    const resetPasswordForm = document.querySelector("#reset-password-form");
+    const showResetRequestBtn = document.querySelector("#show-reset-request-btn");
+    const showLoginFromResetBtn = document.querySelector("#show-login-from-reset-btn");
 
     // ---------- localStorage 읽기/쓰기 ----------
     function loadArticles() {
@@ -1167,21 +1201,43 @@
       });
     });
 
-    // ---------- 로그인 / 회원가입 / 로그아웃 ----------
+    // ---------- 로그인 / 회원가입 / 비밀번호 재설정 / 로그아웃 ----------
     let currentSession = null;
+    // 비밀번호 재설정 메일의 링크로 들어온 상태인지 표시하는 플래그.
+    // true인 동안에는 로그인 세션이 있어도 보관함으로 넘어가지 않고
+    // "새 비밀번호 설정" 화면에 머무른다.
+    let passwordRecoveryMode = false;
 
     function setAuthMode(mode) {
-      const isLogin = mode === "login";
-      loginForm.hidden = !isLogin;
-      signupForm.hidden = isLogin;
-      authHeading.textContent = isLogin ? "로그인" : "회원가입";
+      loginForm.hidden = mode !== "login";
+      signupForm.hidden = mode !== "signup";
+      resetRequestForm.hidden = mode !== "reset-request";
+      resetPasswordForm.hidden = mode !== "reset-password";
+      const headings = {
+        login: "로그인",
+        signup: "회원가입",
+        "reset-request": "비밀번호 찾기",
+        "reset-password": "새 비밀번호 설정"
+      };
+      authHeading.textContent = headings[mode] || "로그인";
     }
 
     showSignupBtn.addEventListener("click", () => setAuthMode("signup"));
     showLoginBtn.addEventListener("click", () => setAuthMode("login"));
+    showResetRequestBtn.addEventListener("click", () => setAuthMode("reset-request"));
+    showLoginFromResetBtn.addEventListener("click", () => setAuthMode("login"));
 
     function applyAuthState() {
       const loggedIn = !!currentSession;
+
+      if (loggedIn && passwordRecoveryMode) {
+        appNav.hidden = true;
+        views.forEach(v => v.classList.toggle("active", v.id === "view-auth"));
+        navButtons.forEach(b => b.classList.remove("active"));
+        setAuthMode("reset-password");
+        return;
+      }
+
       appNav.hidden = !loggedIn;
 
       if (loggedIn) {
@@ -1204,8 +1260,15 @@
       currentSession = data.session;
       applyAuthState();
 
-      supabaseClient.auth.onAuthStateChange((_event, session) => {
+      // 비밀번호 재설정 메일의 링크를 눌러 돌아오면 Supabase SDK가 URL에서
+      // 세션을 읽어들이면서 이 콜백을 "PASSWORD_RECOVERY" 이벤트로 호출해준다.
+      supabaseClient.auth.onAuthStateChange((event, session) => {
         currentSession = session;
+        if (event === "PASSWORD_RECOVERY") {
+          passwordRecoveryMode = true;
+        } else if (event === "SIGNED_OUT") {
+          passwordRecoveryMode = false;
+        }
         applyAuthState();
       });
     }
@@ -1257,6 +1320,60 @@
       } catch (err) {
         console.error("회원가입 중 오류:", err);
         showToast("회원가입 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.");
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    resetRequestForm.addEventListener("submit", async e => {
+      e.preventDefault();
+      const email = resetRequestForm.email.value.trim();
+      const btn = document.querySelector("#reset-request-submit-btn");
+      btn.disabled = true;
+      try {
+        const { error } = await supabaseClient.auth.resetPasswordForEmail(email, {
+          redirectTo: "https://bobaedoing.github.io/anbobae/"
+        });
+        if (error) {
+          showToast("재설정 메일 발송에 실패했습니다: " + error.message);
+          return;
+        }
+        showToast("비밀번호 재설정 메일을 보냈어요. 메일함에서 링크를 확인해주세요.");
+        resetRequestForm.reset();
+        setAuthMode("login");
+      } catch (err) {
+        console.error("비밀번호 재설정 요청 중 오류:", err);
+        showToast("재설정 요청 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.");
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    resetPasswordForm.addEventListener("submit", async e => {
+      e.preventDefault();
+      const password = resetPasswordForm.password.value;
+      const passwordConfirm = resetPasswordForm.passwordConfirm.value;
+      if (password !== passwordConfirm) {
+        showToast("비밀번호가 일치하지 않습니다.");
+        return;
+      }
+      const btn = document.querySelector("#reset-password-submit-btn");
+      btn.disabled = true;
+      try {
+        const { error } = await supabaseClient.auth.updateUser({ password });
+        if (error) {
+          showToast("비밀번호 설정에 실패했습니다: " + error.message);
+          return;
+        }
+        resetPasswordForm.reset();
+        passwordRecoveryMode = false;
+        // 재설정 직후에는 임시 복구 세션을 로그아웃시켜, 새 비밀번호로
+        // 다시 정식 로그인하도록 안내한다.
+        await supabaseClient.auth.signOut();
+        showToast("비밀번호가 변경되었습니다. 새 비밀번호로 로그인해주세요.");
+      } catch (err) {
+        console.error("비밀번호 설정 중 오류:", err);
+        showToast("비밀번호 설정 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.");
       } finally {
         btn.disabled = false;
       }
